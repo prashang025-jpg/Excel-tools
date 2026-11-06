@@ -57,6 +57,7 @@ section{display:none}section.on{display:block}input[type=file]{display:none}
 <div class="row"><label class="btn" for="if">Upload incomplete file</label><input type="file" id="if" accept=".xlsx"><span id="in" class="mu"></span></div></div>
 <div class="card"><h2>Look up by</h2><div class="mu">Tick one or more columns (barcode, item code…). Each is tried in turn; the first exact match fills the cell.</div>
 <div class="keys" id="keys"></div>
+<div class="mu" style="margin-top:14px">Columns to fill (columns that are not in the master are unticked):</div><div class="keys" id="cols"></div>
 <div class="row"><label><input type="checkbox" id="hl" checked> Colour the cells that were filled</label></div>
 <div class="row"><button class="btn" id="run">Fill missing details</button></div>
 <div class="msg" id="im"></div><div class="row"><button class="btn sec" id="dl" hidden>Download file</button></div></div></section>
@@ -90,11 +91,13 @@ const $=s=>document.querySelector(s),mem={},msg=(i,t,e)=>{const n=$('#'+i);n.tex
 function idb(){return new Promise((a,b)=>{try{const r=indexedDB.open('xlapp',1);r.onupgradeneeded=()=>r.result.createObjectStore('f');r.onsuccess=()=>a(r.result);r.onerror=()=>b(r.error)}catch(e){b(e)}})}
 async function st(op,k,v){try{const d=await idb();return await new Promise((a,b)=>{const o=d.transaction('f',op==='get'?'readonly':'readwrite').objectStore('f');const q=op==='get'?o.get(k):op==='set'?o.put(v,k):o.delete(k);q.onsuccess=()=>a(q.result);q.onerror=()=>b(q.error)})}catch(e){if(op==='get')return mem[k];if(op==='set')mem[k]=v;else delete mem[k]}}
 const E=v=>v==null||(typeof v==='string'&&v.trim()===''),clone=o=>JSON.parse(JSON.stringify(o||{}));
+const MISS=v=>E(v)||(typeof v==='string'&&/^(item\s*not\s*found|not\s*found|n\/a|#n\/a|#value!|#ref!|#name\?|#div\/0!|#null!|#num!)$/i.test(v.trim()));
 function pv(c){let v=c.value;if(v&&typeof v==='object'&&!(v instanceof Date)){if('formula' in v||'sharedFormula' in v)v=v.result;else if(v.richText)v=v.richText.map(t=>t.text).join('');else if(v.text!==undefined)v=v.text;else v=v.error||null}
 if(v&&typeof v==='object'&&!(v instanceof Date))v=v.error||null;return v===undefined?null:v}
 const K=v=>E(v)?'':(v instanceof Date?v.toISOString():String(v).trim());
 async function load(b){const w=new ExcelJS.Workbook();await w.xlsx.load(b);return w}
-function heads(ws){const m=new Map();ws.getRow(1).eachCell({includeEmpty:false},(c,i)=>{const h=String(pv(c)??'').trim();if(h&&!m.has(h.toLowerCase()))m.set(h.toLowerCase(),{n:h,i})});return m}
+function hr(ws){if(ws._hr)return ws._hr;let best=1,bc=-1;for(let r=1;r<=Math.min(ws.rowCount,30);r++){let c=0;ws.getRow(r).eachCell({includeEmpty:false},x=>{const v=pv(x);if(typeof v==='string'&&v.trim()!==''&&isNaN(Number(v)))c++});if(c>bc){bc=c;best=r}}return ws._hr=best}
+function heads(ws){const m=new Map();ws.getRow(hr(ws)).eachCell({includeEmpty:false},(c,i)=>{const h=String(pv(c)??'').trim();if(h&&!m.has(h.toLowerCase()))m.set(h.toLowerCase(),{n:h,i})});return m}
 const fill=a=>({type:'pattern',pattern:'solid',fgColor:{argb:a}});
 function dlBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000)}
 async function save(blob,name){dlBlob(blob,name.replace(/\.[^.]+$/,'')+'_done.xlsx')}
@@ -114,10 +117,10 @@ function draw(k){const s=slot[k];$('#'+k+'n').textContent=s?'Saved: '+s.name:'No
 
 let INC=null;
 $('#if').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const b=await f.arrayBuffer(),w=await load(b);INC={name:f.name,buf:b,h:[...heads(w.worksheets[0]).values()].map(x=>x.n)};$('#in').textContent=f.name;$('#dl').hidden=true;msg('im','');keys()}catch(x){msg('im','Could not read this file. Please use an .xlsx file.',1)}e.target.value=''};
-function keys(){const box=$('#keys');box.innerHTML='';if(!slot.m||!INC){box.innerHTML='<span class="mu">Upload the master and the incomplete file first.</span>';return}
+function keys(){const box=$('#keys'),cb=$('#cols');box.innerHTML='';cb.innerHTML='';if(!slot.m||!INC){box.innerHTML='<span class="mu">Upload the master and the incomplete file first.</span>';return}
  const mh=new Set(slot.m.h.map(h=>h.toLowerCase()));const c=INC.h.filter(h=>mh.has(h.toLowerCase()));
  if(!c.length)box.innerHTML='<span class="mu">No column headings are shared with the master file.</span>';
- c.forEach(h=>{const l=document.createElement('label'),i=document.createElement('input');i.type='checkbox';i.value=h;i.checked=/barcode|code|sku|\bid\b/i.test(h);l.append(i,' '+h);box.append(l)})}
+ c.forEach(h=>{const l=document.createElement('label'),i=document.createElement('input');i.type='checkbox';i.value=h;i.checked=/barcode|code|sku|\bid\b/i.test(h);l.append(i,' '+h);box.append(l)});INC.h.forEach(h=>{const l=document.createElement('label'),i=document.createElement('input');i.type='checkbox';i.value=h;i.checked=mh.has(h.toLowerCase());l.append(i,' '+h);cb.append(l)})}
 
 let OUT=null;
 $('#run').onclick=async()=>{try{
@@ -125,33 +128,34 @@ $('#run').onclick=async()=>{try{
  if(!slot.m||!INC)return msg('im','Upload the master file and the incomplete file first.',1);
  if(!ks.length)return msg('im','Tick at least one Look up by column.',1);
  msg('im','Working…');
- const mws=(await load(slot.m.buf)).worksheets[0],mh=heads(mws),mrows=[];mws.eachRow((r,n)=>{if(n>1)mrows.push(r)});
+ const mws=(await load(slot.m.buf)).worksheets[0],mh=heads(mws),mrows=[];mws.eachRow((r,n)=>{if(n>hr(mws))mrows.push(r)});
  const idx={};ks.forEach(k=>{idx[k]=new Map();const col=mh.get(k);if(!col)return;mrows.forEach(r=>{const x=K(pv(r.getCell(col.i)));if(x){if(!idx[k].has(x))idx[k].set(x,[]);idx[k].get(x).push(r)}})});
  const iwb=await load(INC.buf),iws=iwb.worksheets[0];let wb=iwb,ws=iws;
  if(slot.s){
-  const sws=(await load(slot.s.buf)).worksheets[0],sh=heads(sws),ih=heads(iws);wb=new ExcelJS.Workbook();ws=wb.addWorksheet(iws.name);
+  const sws=(await load(slot.s.buf)).worksheets[0],sh=heads(sws),ih=heads(iws);wb=new ExcelJS.Workbook();ws=wb.addWorksheet(iws.name);const H=hr(iws),SH=hr(sws);ws._hr=H;iws.eachRow((r,n)=>{if(n<H)r.eachCell({includeEmpty:false},(c,i)=>{const tc=ws.getRow(n).getCell(i);tc.value=pv(c);tc.style=clone(c.style)})});
   const cols=[...sh.values()].filter(h=>ih.has(h.n.toLowerCase())).sort((a,b)=>a.i-b.i),map=[],dst=[];
-  cols.forEach((h,j)=>{const t=j+1,tc=ws.getRow(1).getCell(t);tc.value=h.n;tc.style=clone(sws.getRow(1).getCell(h.i).style);ws.getColumn(t).width=sws.getColumn(h.i).width||undefined;dst.push(clone(sws.getRow(2).getCell(h.i).style));map.push(ih.get(h.n.toLowerCase())?.i||0)});
+  cols.forEach((h,j)=>{const t=j+1,tc=ws.getRow(H).getCell(t);tc.value=h.n;tc.style=clone(sws.getRow(SH).getCell(h.i).style);ws.getColumn(t).width=sws.getColumn(h.i).width||undefined;dst.push(clone(sws.getRow(SH+1).getCell(h.i).style));map.push(ih.get(h.n.toLowerCase())?.i||0)});
   const used=new Set(map);let t=cols.length;
-  [...ih.values()].filter(h=>!used.has(h.i)).forEach(h=>{t++;const tc=ws.getRow(1).getCell(t);tc.value=h.n;tc.style=clone(iws.getRow(1).getCell(h.i).style);ws.getColumn(t).width=iws.getColumn(h.i).width||undefined;map.push(h.i)});
-  iws.eachRow((r,n)=>{if(n<2)return;const tr=ws.getRow(n);map.forEach((si,j)=>{const tc=tr.getCell(j+1),sc=si?r.getCell(si):null;if(sc){tc.value=pv(sc);tc.style=j<cols.length?clone(dst[j]):clone(sc.style);if(tc.value instanceof Date&&!tc.numFmt)tc.numFmt=sc.numFmt||'yyyy-mm-dd'}else tc.style=clone(dst[j]||{})})})
+  [...ih.values()].filter(h=>!used.has(h.i)).forEach(h=>{t++;const tc=ws.getRow(H).getCell(t);tc.value=h.n;tc.style=clone(iws.getRow(H).getCell(h.i).style);ws.getColumn(t).width=iws.getColumn(h.i).width||undefined;map.push(h.i)});
+  iws.eachRow((r,n)=>{if(n<=H)return;const tr=ws.getRow(n);map.forEach((si,j)=>{const tc=tr.getCell(j+1),sc=si?r.getCell(si):null;if(sc){tc.value=pv(sc);tc.style=j<cols.length?clone(dst[j]):clone(sc.style);if(tc.value instanceof Date&&!tc.numFmt)tc.numFmt=sc.numFmt||'yyyy-mm-dd'}else tc.style=clone(dst[j]||{})})})
  }else ws.eachRow(r=>r.eachCell({includeEmpty:false},c=>{const v=c.value;if(v&&typeof v==='object'&&('formula' in v||'sharedFormula' in v))c.value=pv(c)}));
- const th=heads(ws),kc=ks.filter(k=>th.has(k)&&mh.has(k)),hl=$('#hl').checked;let ok=0,na=0,tn=0,tx=0;
+ const th=heads(ws),kc=ks.filter(k=>th.has(k)&&mh.has(k)),hl=$('#hl').checked;let ok=0,na=0,tn=0,tx=0,nk=0;const live=new Set(),fc=new Set([...document.querySelectorAll('#cols input:checked')].map(x=>x.value.toLowerCase()));
  const find=re=>[...th.values()].find(h=>re.test(h.n)),num=v=>{if(typeof v==='number')return v;if(typeof v==='string'&&v.trim()!==''&&!isNaN(Number(v.replace(/,/g,''))))return Number(v.replace(/,/g,''));return null};
- const qc=find(/^(qty|quantity|qnty|no\.? of pcs)$/i),pc=find(/^(price|rate|unit price|unit rate|mrp)$/i),tcol=find(/^(total|total price|total amount|total cost|amount|line total)$/i),skip=qc&&pc&&tcol?tcol.i:-1;
- for(let n=2;n<=ws.rowCount;n++){const row=ws.getRow(n);let any=false;th.forEach(h=>{if(!E(pv(row.getCell(h.i))))any=true});if(!any)continue;
-  th.forEach((h,lk)=>{const c=row.getCell(h.i);if(h.i===skip||!E(pv(c)))return;const mc=mh.get(lk),cand=new Set();let val=null;
+ const qc=find(/^(qty|quantity|qnty|no\.? of pcs)$/i),pc=find(/^(price|cost|unit cost|rate|unit price|unit rate|mrp)$/i),tcol=find(/^(total|total price|total amount|total cost|amount|line total)$/i),skip=qc&&pc&&tcol?tcol.i:-1;
+ for(let n=hr(ws)+1;n<=ws.rowCount;n++){const row=ws.getRow(n);let any=false;th.forEach(h=>{if(!E(pv(row.getCell(h.i))))any=true});if(!any)continue;
+  if(!kc.some(k=>!MISS(pv(row.getCell(th.get(k).i))))){nk++;continue}live.add(n);
+  th.forEach((h,lk)=>{const c=row.getCell(h.i);if(h.i===skip||!fc.has(lk)||!MISS(pv(c)))return;const mc=mh.get(lk),cand=new Set();let val=null;
    if(mc)for(const k of kc){const kv=K(pv(row.getCell(th.get(k).i)));if(!kv)continue;const ms=idx[k].get(kv);if(!ms)continue;
-    for(const m of ms){const cell=m.getCell(mc.i),v=pv(cell);if(!E(v)){const s=K(v);if(!cand.has(s)){cand.add(s);val={v,cell}}}}}
+    for(const m of ms){const cell=m.getCell(mc.i),v=pv(cell);if(!MISS(v)){const s=K(v);if(!cand.has(s)){cand.add(s);val={v,cell}}}}}
    if(cand.size===1){c.value=val.v;if(val.cell.numFmt&&(!c.numFmt||c.numFmt==='General'))c.numFmt=val.cell.numFmt;if(val.v instanceof Date&&!c.numFmt)c.numFmt='yyyy-mm-dd';ok++;if(hl)c.fill=fill('FFD9F2D9')}
    else{c.value='Need action';c.fill=fill('FFFFC7CE');na++}})}
- if(skip>0)for(let n=2;n<=ws.rowCount;n++){const row=ws.getRow(n),q=num(pv(row.getCell(qc.i))),p=num(pv(row.getCell(pc.i))),c=row.getCell(tcol.i),old=pv(c);
-  if(q===null||p===null){if(E(old)&&[...th.values()].some(h=>!E(pv(row.getCell(h.i))))){c.value='Need action';c.fill=fill('FFFFC7CE');na++}continue}
+ if(skip>0)for(let n=hr(ws)+1;n<=ws.rowCount;n++){if(!live.has(n))continue;const row=ws.getRow(n),q=num(pv(row.getCell(qc.i))),p=num(pv(row.getCell(pc.i))),c=row.getCell(tcol.i),old=pv(c);
+  if(q===null||p===null){if(MISS(old)){c.value='Need action';c.fill=fill('FFFFC7CE');na++}continue}
   const t=Math.round(q*p*1e6)/1e6;
-  if(E(old)){c.value=t;tn++;if(hl)c.fill=fill('FFD9F2D9')}else if(num(old)!==t){c.value=t;tx++;c.fill=fill('FFFFEB9C')}
+  if(MISS(old)){c.value=t;tn++;if(hl)c.fill=fill('FFD9F2D9')}else if(num(old)!==t){c.value=t;tx++;c.fill=fill('FFFFEB9C')}
   if(!c.numFmt||c.numFmt==='General')c.numFmt='#,##0.00'}
  OUT=new Blob([await wb.xlsx.writeBuffer()]);
- msg('im','Done.\nFilled from master: '+ok+'\nNeed action (red): '+na+(skip>0?'\nTotals calculated (qty × price): '+tn+(tx?'\nTotals corrected (yellow): '+tx:''):'')+(slot.s?'\nSample format applied.':'\nNo sample saved, so the original format was kept.'));$('#dl').hidden=false;
+ msg('im','Done.\nFilled from master: '+ok+'\nNeed action (red): '+na+(nk?'\nRows skipped (no value in the Look up by columns): '+nk:'')+(skip>0?'\nTotals calculated (qty × price): '+tn+(tx?'\nTotals corrected (yellow): '+tx:''):'')+(slot.s?'\nSample format applied.':'\nNo sample saved, so the original format was kept.'));$('#dl').hidden=false;
 }catch(e){console.error(e);msg('im','Something went wrong while reading the files.',1)}};
 $('#dl').onclick=()=>OUT&&save(OUT,INC.name);
 
@@ -164,10 +168,10 @@ $('#cr').onclick=async()=>{try{
  if(CF.length<2)return msg('cm','Add at least two files.',1);
  const wb=new ExcelJS.Workbook(),ws=wb.addWorksheet('Combined'),H=new Map(),L=[];
  for(const f of CF)L.push([f,(await load(f.buf)).worksheets[0]]);
- L.forEach(([f,s])=>heads(s).forEach((v,k)=>{if(!H.has(k)){const t=H.size+1;H.set(k,{n:v.n,t});const c=ws.getRow(1).getCell(t);c.value=v.n;c.style=clone(s.getRow(1).getCell(v.i).style);ws.getColumn(t).width=s.getColumn(v.i).width||undefined}}));
+ L.forEach(([f,s])=>heads(s).forEach((v,k)=>{if(!H.has(k)){const t=H.size+1;H.set(k,{n:v.n,t});const c=ws.getRow(1).getCell(t);c.value=v.n;c.style=clone(s.getRow(hr(s)).getCell(v.i).style);ws.getColumn(t).width=s.getColumn(v.i).width||undefined}}));
  const sc=H.size+1;ws.getRow(1).getCell(sc).value='Source File';ws.getRow(1).getCell(sc).font={bold:true};ws.getColumn(sc).width=24;
  let n=1;const rows=[];
- L.forEach(([f,s])=>{const h=heads(s);s.eachRow((r,rn)=>{if(rn<2)return;n++;const tr=ws.getRow(n);h.forEach((v,k)=>{const c=r.getCell(v.i),tc=tr.getCell(H.get(k).t);tc.value=pv(c);tc.style=clone(c.style);if(tc.value instanceof Date&&!tc.numFmt)tc.numFmt='yyyy-mm-dd'});tr.getCell(sc).value=f.name;rows.push(n)})});
+ L.forEach(([f,s])=>{const h=heads(s);s.eachRow((r,rn)=>{if(rn<=hr(s))return;n++;const tr=ws.getRow(n);h.forEach((v,k)=>{const c=r.getCell(v.i),tc=tr.getCell(H.get(k).t);tc.value=pv(c);tc.style=clone(c.style);if(tc.value instanceof Date&&!tc.numFmt)tc.numFmt='yyyy-mm-dd'});tr.getCell(sc).value=f.name;rows.push(n)})});
  let d=0;const dk=$('#dup').value;
  if(dk&&H.has(dk)){const cnt=new Map();rows.forEach(r=>{const x=K(pv(ws.getRow(r).getCell(H.get(dk).t)));if(x)cnt.set(x,(cnt.get(x)||0)+1)});
   rows.forEach(r=>{const x=K(pv(ws.getRow(r).getCell(H.get(dk).t)));if(x&&cnt.get(x)>1){d++;for(let c=1;c<=sc;c++)ws.getRow(r).getCell(c).fill=fill('FFFFE0B2')}})}
